@@ -14,6 +14,8 @@ BMCU-Klipper integrates BMCU with Klipper and provides routing, load/unload, ref
 
 BMCU-Klipper is also compatible with PAXX12 Extended Firmware on Snapmaker U1. Installation is the same as on the stock firmware.
 
+Spool IDs are stored per BMCU channel on all supported printers. On Snapmaker U1, the ID is also projected to `print_task_config.filament_spool_id` only when that optional field is provided by the installed firmware (for example, PAXX). The stock U1 firmware and other Klipper printers do not require SpoolLink or PAXX. Automatic Spoolman tracking requires a separate compatible integration.
+
 The integration keeps USB/UART transport and print planning outside Klipper's main reactor where possible, while BMCU firmware handles motor and buffer control.
 
 ## Connecting BMCU

@@ -3491,6 +3491,7 @@ function openChannelEditor(deviceName, channelIndex) {
   $('editName').value = /^channel\s+\d+$/i.test(channel.name || '') ? '' : channel.name || '';
   $('editMaterial').value = normalizeMaterialEditorValue(channel.material || 'PLA');
   $('editColor').value = /^#[0-9a-f]{6}$/i.test(channel.color || '') ? channel.color : '#ffffff';
+  $('editSpoolId').value = Number(channel.spool_id) > 0 ? String(channel.spool_id) : '';
   $('editRefill').checked = channel.refill_enabled !== false;
   $('editRefillGroup').value = channel.refill_group || '';
   $('editRefillPriority').value = Number(channel.refill_priority ?? channelIndex);
@@ -3556,6 +3557,11 @@ async function saveChannelEditor() {
     return;
   }
   $('editMaterial').value = material;
+  const spoolId = $('editSpoolId').value.trim();
+  if (spoolId && (!/^[1-9]\d*$/.test(spoolId) || Number(spoolId) > 2147483647)) {
+    toast('Spool ID must be an integer between 1 and 2147483647.', 'error');
+    return;
+  }
   const {device, channel} = ui.editing;
   const name = $('editName').value.trim();
   const group = $('editRefillGroup').value.trim();
@@ -3567,6 +3573,7 @@ async function saveChannelEditor() {
     `CHANNEL=${channel}`,
     `MATERIAL=${gcodeValue(material)}`,
     `COLOR=${gcodeValue($('editColor').value)}`,
+    `SPOOL_ID=${spoolId ? Number(spoolId) : -1}`,
     `REFILL=${$('editRefill').checked ? 1 : 0}`,
     `REFILL_PRIORITY=${Number($('editRefillPriority').value || channel)}`,
     `UNLOAD_RETRACT_MM=${retract.toFixed(2)}`,

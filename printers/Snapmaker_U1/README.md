@@ -206,6 +206,8 @@ Snapmaker U1 BMCU
 
 Variants are available for standard OrcaSlicer and Snapmaker Orca.
 
+For BMCU logical tools (`T4+`), the generated profile sets `retract_length_toolchange` to `0`; native `T0-T3` retain their original values. Some OrcaSlicer versions may reset per-tool retraction values when reloading an inherited printer preset. After restarting the slicer, verify the retraction settings for every BMCU tool and inspect the sliced tool-change G-code before printing. This slicer-side persistence behavior is not fixed by the profile generator.
+
 The profile includes:
 
 - the `T0-T3` model for native heads,

@@ -311,6 +311,7 @@ BMCU_PRINT_COMMIT</pre>
         <label class="field full"><span>Label</span><input id="editName" maxlength="80" autocomplete="off" placeholder="e.g. Green PLA"></label>
         <label class="field"><span>Material</span><input id="editMaterial" type="text" maxlength="40" autocomplete="off" spellcheck="false" placeholder="PLA, PETG, TPU..."></label>
         <label class="field"><span>Colour</span><input id="editColor" type="color"></label>
+        <label class="field"><span>Spool ID</span><input id="editSpoolId" type="number" min="1" max="2147483647" step="1" inputmode="numeric" placeholder="Optional"><small>Spoolman ID. Empty clears the assignment; automatic tracking requires a supported integration.</small></label>
         <label class="field"><span>Refill group</span><input id="editRefillGroup" maxlength="64" placeholder="e.g. Green PLA"></label>
         <label class="field"><span>Priority</span><input id="editRefillPriority" type="number" min="0" max="10000"></label>
         <label id="editLogicalToolRow" class="field hidden"><span>Slot</span><select id="editLogicalTool"></select><small id="editLogicalToolHelp">Physical heads use 1 (T0)-4 (T3). BMCU uses 5 (T4)-32 (T31). Changing this requires updating the OrcaSlicer printer profile or Machine G-code.</small></label>

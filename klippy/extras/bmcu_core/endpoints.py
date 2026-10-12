@@ -2601,6 +2601,8 @@ class SnapmakerU1Endpoint(Endpoint):
                     for key in self._projection_fields(config)}
         material_changed = current[:4] != desired[:4]
         try:
+            for key in self._projection_fields(config):
+                config[key] = list(config[key])
             config['filament_vendor'][head] = vendor
             config['filament_type'][head] = material
             config['filament_sub_type'][head] = subtype
@@ -2624,7 +2626,9 @@ class SnapmakerU1Endpoint(Endpoint):
                 self._run('FLOW_RESET_K EXTRUDER=%d' % head, wait_moves=False)
         except Exception:
             for key, value in snapshot.items():
-                config[key][head] = value
+                restored = list(config[key])
+                restored[head] = value
+                config[key] = restored
             try:
                 self._backup_head(task, head)
             except Exception:
@@ -2683,7 +2687,9 @@ class SnapmakerU1Endpoint(Endpoint):
         try:
             if current_tuple != target_tuple:
                 for key in fields:
-                    config[key][head] = copy.deepcopy(projection[key])
+                    updated = list(config[key])
+                    updated[head] = copy.deepcopy(projection[key])
+                    config[key] = updated
                 self._backup_head(task, head)
                 if self._projection_tuple(config, head) != target_tuple:
                     raise EndpointError(
@@ -2697,7 +2703,9 @@ class SnapmakerU1Endpoint(Endpoint):
                 snapshot.get('native_cache_dirty', False))
         except Exception:
             for key in fields:
-                config[key][head] = current_projection[key]
+                restored = list(config[key])
+                restored[head] = current_projection[key]
+                config[key] = restored
             try:
                 self._backup_head(task, head)
             except Exception:
@@ -2740,6 +2748,8 @@ class SnapmakerU1Endpoint(Endpoint):
 
             cache_changed = self._clear_native_filament_cache()
 
+            for key in self._projection_fields(config):
+                config[key] = list(config[key])
             config['filament_vendor'][head] = 'NONE'
             config['filament_type'][head] = 'NONE'
             config['filament_sub_type'][head] = 'NONE'
@@ -2761,7 +2771,9 @@ class SnapmakerU1Endpoint(Endpoint):
                     'Snapmaker filament clear readback mismatch for head %d' % head)
         except Exception:
             for key, value in snapshot.items():
-                config[key][head] = value
+                restored = list(config[key])
+                restored[head] = value
+                config[key] = restored
             try:
                 self._backup_head(task, head)
             except Exception:

@@ -14094,6 +14094,23 @@ class BMCUManager(object):
             device.runtime_config_sync_pending = True
             self._sync_device_runtime_config(self.reactor.monotonic(), device)
         self._sync_channel_status_cache(device, channel)
+        projection_changed = any(
+            metadata.get(key) != metadata_snapshot.get(key)
+            for key in ('material', 'vendor', 'subtype', 'profile_id',
+                        'color', 'colors', 'color_mode', 'spool_id'))
+        if (projection_changed and self.owns_filament_callbacks and
+                self.printer_analysis.get('features', {}).get('snapmaker_u1')):
+            endpoint_name = self._channel_endpoint_name(device, channel)
+            endpoint = self.endpoints.get(endpoint_name)
+            if (endpoint is not None and endpoint.driver == 'snapmaker_u1' and
+                    self._loaded_devices_for_endpoint(endpoint_name) == [(device, channel)]):
+                self._queue_deferred_task(
+                    'u1-filament-metadata:%s' % endpoint_name,
+                    lambda eventtime, ep=endpoint, dev=device, ch=channel:
+                        ep.sync_active_filament(self._channel_metadata(dev, ch))
+                        if (self.owns_filament_callbacks and
+                            self._loaded_devices_for_endpoint(ep.name) == [(dev, ch)])
+                        else None)
         if tool_change is not None and tool_change.get('owner') is not None:
             owner_device, owner_channel = tool_change['owner']
             self._sync_channel_status_cache(owner_device, owner_channel)
