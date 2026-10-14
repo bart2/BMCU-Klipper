@@ -422,11 +422,7 @@ def _clean_device_motion(raw, defaults=None):
             raw_values.get('loading_handoff_pct'), 82.0, 60.0, 98.0)
     return cleaned
 
-def _clean_device_record(raw):
-    raw = dict(raw) if isinstance(raw, dict) else {}
-    channels = raw.get('channels')
-    if not isinstance(channels, dict):
-        channels = {}
+def _clean_device_lighting_state(raw):
     lighting = _clean_lighting(
         raw.get('lighting'), raw.get('system_led_color', '#FFFFFF'))
     profiles = _clean_lighting_profiles(raw.get('lighting_profiles'))
@@ -453,6 +449,14 @@ def _clean_device_record(raw):
         lighting = _clean_lighting(DEFAULT_LIGHTING)
     else:
         lighting = _clean_lighting(profiles[active])
+    return lighting, active, profiles
+
+def _clean_device_record(raw):
+    raw = dict(raw) if isinstance(raw, dict) else {}
+    channels = raw.get('channels')
+    if not isinstance(channels, dict):
+        channels = {}
+    lighting, active, profiles = _clean_device_lighting_state(raw)
     return {
         'name': _clean_text(raw.get('name'), '', 64),
         'port': _clean_text(raw.get('port'), '', 1024),
@@ -887,7 +891,7 @@ class StateStore(object):
         self.path = path
         self.writer = writer
         self.data = default_state()
-        self._sanitized_device_ids = set()
+        self._sanitized_device_ids = {}
         self.load()
 
     def load(self):
@@ -1171,25 +1175,28 @@ class StateStore(object):
         return True
 
     def ensure_device(self, uid, name, port, motion_defaults=None):
-        device = self.data['devices'].setdefault(uid, {
-            'name': name, 'port': port,
-            'system_led_color': '#FFFFFF',
-            'lighting': _clean_lighting({}),
-            'lighting_profile': 'DEFAULT',
-            'lighting_profiles': {},
-            'channels': {}
-        })
+        devices = self.data['devices']
+        if uid not in devices:
+            devices[uid] = {
+                'name': name, 'port': port,
+                'system_led_color': '#FFFFFF',
+                'lighting': _clean_lighting({}),
+                'lighting_profile': 'DEFAULT',
+                'lighting_profiles': {},
+                'channels': {}
+            }
+        device = devices[uid]
         device['name'] = name
         device['port'] = port
-        cleaned_device = _clean_device_record(device)
-        device['lighting'] = cleaned_device['lighting']
-        device['lighting_profile'] = cleaned_device['lighting_profile']
-        device['lighting_profiles'] = cleaned_device['lighting_profiles']
+        lighting, active, profiles = _clean_device_lighting_state(device)
+        device['lighting'] = lighting
+        device['lighting_profile'] = active
+        device['lighting_profiles'] = profiles
         device['system_led_color'] = device['lighting']['system_color']
         device['motion_config'] = _clean_device_motion(
             device.get('motion_config'), motion_defaults)
         marker = id(device)
-        if marker not in self._sanitized_device_ids:
+        if self._sanitized_device_ids.get(marker) is not device:
             channels = device.get('channels')
             if not isinstance(channels, dict):
                 channels = {}
@@ -1197,5 +1204,9 @@ class StateStore(object):
                 str(channel): _clean_channel_state(channels.get(str(channel)), channel)
                 for channel in range(4)
             }
-            self._sanitized_device_ids.add(marker)
+            self._sanitized_device_ids[marker] = device
+            if len(self._sanitized_device_ids) > len(self.data['devices']):
+                live = {id(record) for record in self.data['devices'].values()}
+                for stale in self._sanitized_device_ids.keys() - live:
+                    del self._sanitized_device_ids[stale]
         return device

@@ -42,6 +42,16 @@ GENERIC_BMCU_TOOL_MIN = 1
 GENERIC_LOGICAL_TOOL_LIMIT = 256
 U1_SOURCE_PLAN_SCHEMA = 1
 
+def _snapshot_value(value):
+    if isinstance(value, dict):
+        return {key: _snapshot_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_snapshot_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_snapshot_value(item) for item in value)
+    return value
+
+
 class BMCUManager(object):
     def __init__(self, config):
         self.config = config
@@ -239,6 +249,8 @@ class BMCUManager(object):
         self._u1_background_channel_locks = {}
         self._u1_background_async_slots = {}
         self._u1_foreground_async_waiters = {}
+        self._u1_stop_generation = 0
+        self._u1_buffer_stop_generations = {}
 
         self._required_transport_users = 0
         self._control_plane_requests = 0
@@ -348,12 +360,17 @@ class BMCUManager(object):
         self._update_prepared = False
         self._status_cache = None
         self._status_cache_at = 0.0
+        self._device_state_read_caches = {}
         self._manager_tick_count = 0
         self._manager_tick_max_ms = 0.0
         self._manager_tick_overruns = 0
         self._manager_active_ticks = 0
         self._manager_idle_ticks = 0
         self._status_cache_hits = 0
+        self._status_build_count = 0
+        self._status_build_last_ms = 0.0
+        self._status_build_max_ms = 0.0
+        self._status_build_overruns = 0
         self._u1_cancel_original = None
         self._u1_cancel_wrapped = False
         self._u1_replenish_original = None
@@ -679,13 +696,34 @@ class BMCUManager(object):
         if changed:
             self._defer_state_save()
 
+    @contextmanager
+    def _batch_device_state_reads(self):
+        current = greenlet.getcurrent()
+        if current in self._device_state_read_caches:
+            yield
+            return
+        self._device_state_read_caches[current] = {}
+        try:
+            yield
+        finally:
+            self._device_state_read_caches.pop(current, None)
+
     def _device_state(self, device):
         pending = self._forget_pending.get(device.name)
         if isinstance(pending, dict) and isinstance(pending.get('shadow'), dict):
             return pending['shadow']
         key = self._state_key(device)
-        return self.state.ensure_device(
+        cache = self._device_state_read_caches.get(greenlet.getcurrent())
+        token = (key, device.name, device.port)
+        if cache is not None and token in cache:
+            record = cache[token]
+            if self.state.data['devices'].get(key) is record:
+                return record
+        state = self.state.ensure_device(
             key, device.name, device.port, self.motion_defaults)
+        if cache is not None:
+            cache[token] = state
+        return state
 
     def _device_loading_handoff_pct(self, device, endpoint=None, refill=False):
         motion = self._device_state(device).get('motion_config', {})
@@ -2739,16 +2777,22 @@ class BMCUManager(object):
                 operation = self.active_operations.get(device.name)
                 if (isinstance(operation, dict) and
                         operation.get('type') == protocol.OP_BUFFER_CALIBRATION):
-                    operation.update({
+                    updates = {
                         'progress': int(auto_cal.get('progress', 0)),
                         'stage': int(auto_cal.get('stage', 0)),
                         'done_mask': int(auto_cal.get('done_mask', 0)),
                         'selected_mask': int(auto_cal.get('selected_mask', 0)),
-                    })
+                    }
+                    if current.get('active_op_id'):
+                        updates['op_id'] = int(current['active_op_id'])
+                    if any(operation.get(key) != value
+                           for key, value in updates.items()):
+                        operation.update(updates)
+                        self._publish_active_operations()
             return
 
         if auto_cal.get('active'):
-            self.active_operations[device.name] = {
+            calibration_record = {
                 'name': 'BUFFER_CALIBRATION', 'type': protocol.OP_BUFFER_CALIBRATION,
                 'type_name': 'buffer_calibration', 'device': device.name,
                 'channel': int(auto_cal.get('channel', 0xff)),
@@ -2757,12 +2801,17 @@ class BMCUManager(object):
                 'done_mask': int(auto_cal.get('done_mask', 0)),
                 'selected_mask': int(auto_cal.get('selected_mask', 0)),
             }
+            if current.get('active_op_id'):
+                calibration_record['op_id'] = int(current['active_op_id'])
+            self.active_operations[device.name] = calibration_record
+            self._publish_active_operations()
         elif self.active_operations.get(device.name, {}).get('type') == protocol.OP_BUFFER_CALIBRATION:
             active_op_type = int(current.get('active_op_type', 0))
             active_op_state = int(current.get('active_op_state', protocol.OP_STATE_IDLE))
             if (active_op_type != protocol.OP_BUFFER_CALIBRATION or
                     active_op_state != protocol.OP_STATE_RUNNING):
                 self.active_operations.pop(device.name, None)
+                self._publish_active_operations()
                 if device.name in self._calibration_policy_suspended:
                     self._queue_deferred_task(
                         'restore-runtime-policy:%s' % device.name,
@@ -3044,6 +3093,7 @@ class BMCUManager(object):
     def operation_finished(self, device, result):
         if result['type'] == protocol.OP_BUFFER_CALIBRATION:
             self.active_operations.pop(device.name, None)
+            self._publish_active_operations()
             self.last_diagnostic = {'device': device.name, 'operation': result}
             self._queue_deferred_task(
                 'refresh-calibration:%s' % device.name,
@@ -3211,6 +3261,10 @@ class BMCUManager(object):
             'manager_active_ticks': int(self._manager_active_ticks),
             'manager_idle_ticks': int(self._manager_idle_ticks),
             'status_cache_hits': int(self._status_cache_hits),
+            'status_build_count': int(self._status_build_count),
+            'status_build_last_ms': float(self._status_build_last_ms),
+            'status_build_max_ms': float(self._status_build_max_ms),
+            'status_build_overruns': int(self._status_build_overruns),
             'deferred_task_runs': int(self._deferred_task_runs),
             'deferred_task_max_ms': float(self._deferred_task_max_ms),
             'deferred_task_overflows': int(self._deferred_task_overflows),
@@ -3375,8 +3429,8 @@ class BMCUManager(object):
             'systems': systems,
             'print_job_id': self.print_job_id,
             'print_map_active': self.print_map_active,
-            'print_tools': dict(self.print_tools),
-            'print_plan_tools': dict(self.print_plan_tools),
+            'print_tools': _snapshot_value(self.print_tools),
+            'print_plan_tools': _snapshot_value(self.print_plan_tools),
             'print_plan_required': sorted(self.print_plan_required),
             'print_plan_open': bool(self.print_plan_open),
             'print_plan_interrupted': bool(self.print_plan_interrupted),
@@ -3391,7 +3445,7 @@ class BMCUManager(object):
             'u1_toolchange_resume_pending': copy.deepcopy(
                 self._u1_toolchange_resume_pending),
             'print_refill_backups': {
-                str(tool): [dict(item) for item in items]
+                str(tool): _snapshot_value(items)
                 for tool, items in getattr(self.refill, 'print_backups', {}).items()
             },
             'capabilities': {
@@ -3450,7 +3504,7 @@ class BMCUManager(object):
             'leave_final_filament_loaded'])
 
     def _public_active_operations(self):
-        operations = dict(self.active_operations)
+        operations = _snapshot_value(self.active_operations)
         for endpoint_name, job in self._u1_background_jobs.items():
             if not job.get('locked'):
                 continue
@@ -3465,9 +3519,10 @@ class BMCUManager(object):
         return operations
 
     def _runtime_status_overlay(self):
+        operations = self._public_active_operations()
         return {
-            'print_tools': dict(self.print_tools),
-            'print_plan_tools': dict(self.print_plan_tools),
+            'print_tools': _snapshot_value(self.print_tools),
+            'print_plan_tools': _snapshot_value(self.print_plan_tools),
             'print_job_id': self.print_job_id,
             'print_map_active': bool(self.print_map_active),
             'print_plan_open': bool(self.print_plan_open),
@@ -3485,9 +3540,9 @@ class BMCUManager(object):
             'loaded_tools': dict(self.loaded_tools),
             'loaded_tool': (next(iter(self.loaded_tools.values()))
                             if len(self.loaded_tools) == 1 else -1),
-            'active_operations': self._public_active_operations(),
-            'active_operation': next(iter(self._public_active_operations().values()), None),
-            'last_error': self.last_error,
+            'active_operations': operations,
+            'active_operation': next(iter(operations.values()), None),
+            'last_error': _snapshot_value(self.last_error),
             'print_state': self._print_state(),
         }
 
@@ -3497,8 +3552,8 @@ class BMCUManager(object):
         orca_overlay = {
             'print_job_id': overlay['print_job_id'],
             'print_map_active': overlay['print_map_active'],
-            'print_tools': dict(overlay['print_tools']),
-            'print_plan_tools': dict(overlay['print_plan_tools']),
+            'print_tools': _snapshot_value(overlay['print_tools']),
+            'print_plan_tools': _snapshot_value(overlay['print_plan_tools']),
             'print_plan_required': list(overlay['print_plan_required']),
             'print_plan_open': overlay['print_plan_open'],
             'print_plan_interrupted': overlay['print_plan_interrupted'],
@@ -3511,15 +3566,48 @@ class BMCUManager(object):
             'u1_cross_refill_pending': copy.deepcopy(
                 overlay['u1_cross_refill_pending']),
         }
-        for target in (self._status_cache, self._critical_status_fallback):
-            if not isinstance(target, dict):
-                continue
+        def patch_status(target):
             target.update(overlay)
             target['refill'] = self.refill.status()
 
             orca = target.get('orca')
             if isinstance(orca, dict):
+                orca = dict(orca)
                 orca.update(orca_overlay)
+                target['orca'] = orca
+            return True
+        self._replace_cached_status(patch_status)
+
+    def _replace_cached_status(self, patch_status):
+        shared = self._critical_status_fallback is self._status_cache
+        for attr in ('_status_cache', '_critical_status_fallback'):
+            if shared and attr == '_critical_status_fallback':
+                self._critical_status_fallback = self._status_cache
+                continue
+            target = getattr(self, attr)
+            if not isinstance(target, dict):
+                continue
+            updated = dict(target)
+            if patch_status(updated):
+                setattr(self, attr, updated)
+
+    def _sync_active_operations_cache(self):
+        if (self._status_cache is None and
+                self._critical_status_fallback is None):
+            return
+        operations = self._public_active_operations()
+        active = next(iter(operations.values()), None)
+        def patch_status(target):
+            target['active_operations'] = operations
+            target['active_operation'] = active
+            return True
+        self._replace_cached_status(patch_status)
+
+    def _publish_active_operations(self):
+        try:
+            self._sync_active_operations_cache()
+        except Exception:
+            logging.exception('BMCU active-operation status publication failed')
 
     def _sync_channel_status_cache(self, device, channel):
         channel = int(channel)
@@ -3535,21 +3623,31 @@ class BMCUManager(object):
             'autoload_effective_mm':
                 self._effective_channel_autoload_mm(device, channel),
         })
-        for target in (self._status_cache, self._critical_status_fallback):
-            if not isinstance(target, dict):
-                continue
-            for cached_device in target.get('devices', []):
+        def patch_status(target):
+            devices = list(target.get('devices', []))
+            changed = False
+            for device_index, cached_device in enumerate(devices):
                 if str(cached_device.get('name', '') or '') != device.name:
                     continue
-                channels = cached_device.get('channels', [])
-                cached_channel = next((
-                    value for value in channels
+                channels = list(cached_device.get('channels', []))
+                position = next((
+                    index for index, value in enumerate(channels)
                     if int(value.get('channel', -1)) == channel), None)
-                if cached_channel is None:
+                if position is None:
                     continue
+                cached_channel = dict(channels[position])
                 cached_channel.update(copy.deepcopy(patch))
                 cached_channel['state'] = self._channel_state_name(
                     device, channel, cached_channel)
+                channels[position] = cached_channel
+                cached_device = dict(cached_device)
+                cached_device['channels'] = channels
+                devices[device_index] = cached_device
+                changed = True
+            if changed:
+                target['devices'] = devices
+            return changed
+        self._replace_cached_status(patch_status)
 
     def get_status(self, eventtime=None):
         print_silent = self._print_state() in ('printing', 'paused', 'pause')
@@ -3568,6 +3666,33 @@ class BMCUManager(object):
                 now - self._status_cache_at < cache_interval):
             self._status_cache_hits += 1
             return self._status_cache
+        started = self.reactor.monotonic()
+        try:
+            with self._batch_device_state_reads():
+                result = self._build_status(now)
+        finally:
+            self._note_status_build(started)
+        result['performance'].update({
+            'status_build_count': int(self._status_build_count),
+            'status_build_last_ms': float(self._status_build_last_ms),
+            'status_build_max_ms': float(self._status_build_max_ms),
+            'status_build_overruns': int(self._status_build_overruns),
+        })
+        return result
+
+    def _note_status_build(self, started):
+        elapsed_ms = max(0.0, (self.reactor.monotonic() - started) * 1000.0)
+        self._status_build_count += 1
+        self._status_build_last_ms = elapsed_ms
+        if elapsed_ms >= self.callback_warning_ms:
+            self._status_build_overruns += 1
+            if elapsed_ms > self._status_build_max_ms:
+                logging.warning(
+                    'BMCU status rebuild took %.3f ms (new maximum; warning %.3f ms)',
+                    elapsed_ms, self.callback_warning_ms)
+        self._status_build_max_ms = max(self._status_build_max_ms, elapsed_ms)
+
+    def _build_status(self, now):
         devices = []
         for device_index, device in enumerate(self.devices):
             device_state = self._device_state(device)
@@ -3577,7 +3702,7 @@ class BMCUManager(object):
                 for channel in range(4)]
             channels = []
             for channel in range(4):
-                metadata = dict(device_state['channels'][str(channel)])
+                metadata = _snapshot_value(device_state['channels'][str(channel)])
                 route_key = self._route_key(device, channel)
                 durable_tail = self._durable_tail_route(device, channel)
                 metadata.update({
@@ -3597,8 +3722,8 @@ class BMCUManager(object):
                     'calibration_capture_mask': device.status['calibration_capture_mask'][channel],
                     'encoder_io_ok': bool(device.status['encoder_io_mask'] & (1 << channel)),
                     'connected': bool(device.status['connected_mask'] & (1 << channel)),
-                    'slot': device.slots[channel],
-                    'calibration': device.calibration[channel],
+                    'slot': _snapshot_value(device.slots[channel]),
+                    'calibration': _snapshot_value(device.calibration[channel]),
                     'route_state': route_states[channel],
                     'raw_route_state': raw_route_states[channel],
                     'route_state_name': protocol.ROUTE_NAMES.get(
@@ -3612,7 +3737,7 @@ class BMCUManager(object):
                                       str(metadata.get('tail_endpoint', '') or '')),
                     'tail_unrouted': bool(
                         durable_tail and not durable_tail.get('routed')),
-                    'prestaged': dict(self.prestaged.get(route_key, {})),
+                    'prestaged': _snapshot_value(self.prestaged.get(route_key, {})),
                     'autoload_runtime_supported':
                         self._channel_autoload_runtime_supported(device),
                     'channel_retract_supported':
@@ -3639,7 +3764,7 @@ class BMCUManager(object):
                 'load_pressure_runtime_supported':
                     self._load_pressure_runtime_supported(device),
                 'session_id': device.status.get('session_id', 0),
-                'auto_calibration': dict(device.status.get('auto_calibration', {})),
+                'auto_calibration': _snapshot_value(device.status.get('auto_calibration', {})),
                 'system_led_color': self._lighting_config(device_state).get(
                     'system_color', '#FFFFFF'),
                 'lighting': self._lighting_config(device_state),
@@ -3679,7 +3804,7 @@ class BMCUManager(object):
             })
         endpoint_status = {}
         for name, endpoint in self.endpoints.items():
-            values = dict(self.state.data.get('endpoints', {}).get(name, {}))
+            values = _snapshot_value(self.state.data.get('endpoints', {}).get(name, {}))
             values['capabilities'] = endpoint.capabilities()
             values['validation'] = endpoint.validate()
             values['assigned_channels'] = [
@@ -3691,7 +3816,7 @@ class BMCUManager(object):
                 for device, channel, route in self._routes_for_endpoint(
                     name, (protocol.ROUTE_LOADED, protocol.ROUTE_UNCERTAIN))]
             if endpoint.driver == 'snapmaker_u1':
-                values['owner'] = self._u1_owner_status(endpoint)
+                values['owner'] = _snapshot_value(self._u1_owner_status(endpoint))
             else:
                 values['external_sensor_detected'] = endpoint.sensor_detected(
                     'entry_sensor')
@@ -3723,6 +3848,7 @@ class BMCUManager(object):
                 mapping['virtual_tool'] = tool
                 mapping['endpoint'] = self._channel_endpoint_name(device, channel)
                 stable_tools[str(tool)] = mapping
+        operations = self._public_active_operations()
         result = {
             'package_version': PACKAGE_VERSION,
             'package_build_id': self.package_build_id,
@@ -3742,7 +3868,7 @@ class BMCUManager(object):
             'preferences': self._preferences_status(),
 
             'tools': stable_tools,
-            'print_tools': dict(self.print_tools),
+            'print_tools': _snapshot_value(self.print_tools),
             'print_job_id': self.print_job_id,
             'print_map_active': self.print_map_active,
             'print_plan_open': bool(self.print_plan_open),
@@ -3761,13 +3887,13 @@ class BMCUManager(object):
             'loaded_tools': dict(self.loaded_tools),
             'loaded_tool': (next(iter(self.loaded_tools.values()))
                             if len(self.loaded_tools) == 1 else -1),
-            'active_operations': self._public_active_operations(),
-            'active_operation': next(iter(self._public_active_operations().values()), None),
-            'prestaged': dict(self.prestaged),
-            'last_error': self.last_error,
+            'active_operations': operations,
+            'active_operation': next(iter(operations.values()), None),
+            'prestaged': _snapshot_value(self.prestaged),
+            'last_error': _snapshot_value(self.last_error),
             'print_state': self._print_state(),
-            'last_diagnostic': self.last_diagnostic,
-            'printer_analysis': dict(self.printer_analysis),
+            'last_diagnostic': _snapshot_value(self.last_diagnostic),
+            'printer_analysis': _snapshot_value(self.printer_analysis),
             'performance': self._performance_status(),
             'orca': self._orca_status(devices),
             'refill': self.refill.status(),
@@ -6551,15 +6677,16 @@ class BMCUManager(object):
         current.update(extra)
         self._u1_lease_state[endpoint_name] = current
         record = self.state.data.get('u1_ownership', {}).get(endpoint_name, {})
-        for target in (self._status_cache, self._critical_status_fallback):
-            if not isinstance(target, dict):
-                continue
-            endpoint_status = target.get('endpoints', {}).get(endpoint_name)
+
+        def patch_status(target):
+            endpoints = target.get('endpoints', {})
+            endpoint_status = endpoints.get(endpoint_name)
             if not isinstance(endpoint_status, dict):
-                continue
+                return False
             owner_status = endpoint_status.get('owner')
             if not isinstance(owner_status, dict):
-                continue
+                return False
+            owner_status = dict(owner_status)
             owner_status['owner'] = owner
             owner_status['reason'] = current['reason']
             if isinstance(extra.get('path'), dict):
@@ -6567,19 +6694,30 @@ class BMCUManager(object):
                 owner_status['path'] = path
                 stock = owner_status.get('stock_source')
                 if isinstance(stock, dict):
+                    stock = dict(stock)
                     stock['input_detected'] = path.get('feeder_input_detected')
                     stock['path_known'] = bool(path.get('known'))
                     stock['path_busy'] = bool(path.get('busy'))
                     stock['channel_state'] = str(
                         path.get('channel_state', 'unknown') or 'unknown')
+                    owner_status['stock_source'] = stock
             stock = owner_status.get('stock_source')
             if (isinstance(stock, dict) and isinstance(record, dict) and
                     record.get('baseline_captured') and
                     (record.get('generation_open') or
                      record.get('native_auto_override_active'))):
+                stock = dict(stock)
                 stock['material_origin'] = 'captured'
                 stock['user_auto_enabled'] = not bool(
                     record.get('baseline_disabled', False))
+                owner_status['stock_source'] = stock
+            endpoint_status = dict(endpoint_status)
+            endpoint_status['owner'] = owner_status
+            endpoints = dict(endpoints)
+            endpoints[endpoint_name] = endpoint_status
+            target['endpoints'] = endpoints
+            return True
+        self._replace_cached_status(patch_status)
         return previous.get('owner') != owner or previous.get('reason') != current['reason']
 
     def _u1_owner_status(self, endpoint):
@@ -6961,6 +7099,11 @@ class BMCUManager(object):
         return True
 
     def _assigned_routes_for_endpoint(self, endpoint_name, excluded_route=None):
+        with self._batch_device_state_reads():
+            return self._assigned_routes_for_endpoint_read(
+                endpoint_name, excluded_route)
+
+    def _assigned_routes_for_endpoint_read(self, endpoint_name, excluded_route=None):
         routes = []
         for device in self.devices:
             for channel in range(4):
@@ -7265,6 +7408,10 @@ class BMCUManager(object):
         }
 
     def _u1_endpoint_ownership_evidence(self, endpoint_name):
+        with self._batch_device_state_reads():
+            return self._u1_endpoint_ownership_evidence_read(endpoint_name)
+
+    def _u1_endpoint_ownership_evidence_read(self, endpoint_name):
         evidence = []
         for device, channel in self._assigned_routes_for_endpoint(endpoint_name):
             evidence.append(self._u1_route_ownership_evidence(device, channel))
@@ -7310,6 +7457,10 @@ class BMCUManager(object):
         return evidence
 
     def _endpoint_has_loaded_or_active_route(self, endpoint_name):
+        with self._batch_device_state_reads():
+            return self._endpoint_has_loaded_or_active_route_read(endpoint_name)
+
+    def _endpoint_has_loaded_or_active_route_read(self, endpoint_name):
         endpoint = self.endpoints.get(endpoint_name)
         if endpoint is not None and endpoint.driver == 'snapmaker_u1':
             for evidence in self._u1_endpoint_ownership_evidence(endpoint_name):
@@ -7629,7 +7780,14 @@ class BMCUManager(object):
             self._u1_background_async_slots.pop(device_name, None)
         job['background_async_device'] = ''
 
+    def _u1_motion_stop_epoch(self, device, channel):
+        return (self._u1_stop_generation,
+                self._u1_buffer_stop_generations.get((device.name, None), 0),
+                self._u1_buffer_stop_generations.get(
+                    (device.name, int(channel)), 0))
+
     def _acquire_u1_foreground_async_slot(self, device, channel):
+        stop_epoch = self._u1_motion_stop_epoch(device, channel)
         waiters = self._u1_foreground_async_waiters
         waiters[device.name] = waiters.get(device.name, 0) + 1
         try:
@@ -7640,6 +7798,9 @@ class BMCUManager(object):
                 waiters[device.name] = remaining
             else:
                 waiters.pop(device.name, None)
+        if self._u1_motion_stop_epoch(device, channel) != stop_epoch:
+            raise BMCUError(
+                '%s foreground motion was interrupted by STOP' % device.name)
         slot = self._u1_background_async_slots.get(device.name)
         if isinstance(slot, dict):
             raise BMCUError(
@@ -7686,6 +7847,43 @@ class BMCUManager(object):
                 return False
         self._u1_background_async_slots.pop(device.name, None)
         return True
+
+    def _set_u1_foreground_load_motion(self, device, channel, motion):
+        slot = self._u1_background_async_slots.get(device.name)
+        if (isinstance(slot, dict) and slot.get('foreground') and
+                slot.get('channel') == int(channel)):
+            return device.set_motion(channel, motion)
+        token = self._acquire_u1_foreground_async_slot(device, channel)
+        try:
+            return device.set_motion(channel, motion)
+        finally:
+            self._release_u1_foreground_async_slot(device, token=token)
+
+    def _u1_foreground_motion_pair(self, device, channel, first, second,
+                                   pause_s):
+        slot = self._u1_background_async_slots.get(device.name)
+        token = None
+        if not (isinstance(slot, dict) and slot.get('foreground') and
+                slot.get('channel') == int(channel)):
+            token = self._acquire_u1_foreground_async_slot(device, channel)
+            slot = token
+        stop_epoch = self._u1_motion_stop_epoch(device, channel)
+        try:
+            device.set_motion(channel, first)
+            self.reactor.pause(self.reactor.monotonic() + pause_s)
+            if (self._u1_motion_stop_epoch(device, channel) != stop_epoch or
+                    self._u1_background_async_slots.get(device.name) is not slot):
+                raise BMCUError('%s Channel %d motion sequence was interrupted' %
+                                (device.name, int(channel) + 1))
+            device.set_motion(channel, second)
+        finally:
+            if token is not None:
+                self._release_u1_foreground_async_slot(device, token=token)
+
+    def _retry_u1_bite_motion(self, device, channel):
+        self._u1_foreground_motion_pair(
+            device, channel, protocol.MOTION_SEND_OUT,
+            protocol.MOTION_BEFORE_ON_USE, 0.25)
 
     def _start_u1_async_feed(self, device, channel, starter, *args, **kwargs):
         background_job = kwargs.pop('background_job', None)
@@ -7915,6 +8113,7 @@ class BMCUManager(object):
                     previous_elapsed_ms = None
             operation['phase'] = str(phase)
             operation['_debug_phase_started_at'] = float(now)
+            self._publish_active_operations()
             if self.debug_enabled and previous != str(phase):
                 perf = {}
                 try:
@@ -11163,8 +11362,9 @@ class BMCUManager(object):
         if not (5.0 <= cleanup_every <= 100.0):
             raise BMCUError('snap_tail_cleanup_every_mm must be 5..100')
 
-        follower_device.set_motion(
-            follower_channel, protocol.MOTION_BEFORE_ON_USE)
+        self._set_u1_foreground_load_motion(
+            follower_device, follower_channel,
+            protocol.MOTION_BEFORE_ON_USE)
         moved_total = 0.0
         since_cleanup = 0.0
         evidence = []
@@ -12204,7 +12404,8 @@ class BMCUManager(object):
                     snapshot.get('enabled'))
             if self._u1_has_authoritative_entry_sensor(endpoint):
 
-                device.set_motion(channel, protocol.MOTION_BEFORE_ON_USE)
+                self._set_u1_foreground_load_motion(
+                    device, channel, protocol.MOTION_BEFORE_ON_USE)
             if not generic_contract:
                 self._endpoint_temperature_call(
                     endpoint, 'ensure_bite_ready', material,
@@ -12214,7 +12415,11 @@ class BMCUManager(object):
                     device, channel, endpoint, timeout_s,
                     arrival_evidence=arrival)
             else:
-                device.set_motion(channel, protocol.MOTION_BEFORE_ON_USE)
+                if endpoint.driver == 'snapmaker_u1':
+                    self._set_u1_foreground_load_motion(
+                        device, channel, protocol.MOTION_BEFORE_ON_USE)
+                else:
+                    device.set_motion(channel, protocol.MOTION_BEFORE_ON_USE)
 
             if not generic_contract:
                 phase = 'BITE'
@@ -12338,12 +12543,15 @@ class BMCUManager(object):
                         if self.retry_retract_mm > 0:
                             endpoint.extrude(
                                 -self.retry_retract_mm, self.bite_feed)
-                            device.set_motion(
-                                channel, protocol.MOTION_SEND_OUT)
-                            self.reactor.pause(
-                                self.reactor.monotonic() + 0.25)
-                            device.set_motion(
-                                channel, protocol.MOTION_BEFORE_ON_USE)
+                            if endpoint.driver == 'snapmaker_u1':
+                                self._retry_u1_bite_motion(device, channel)
+                            else:
+                                device.set_motion(
+                                    channel, protocol.MOTION_SEND_OUT)
+                                self.reactor.pause(
+                                    self.reactor.monotonic() + 0.25)
+                                device.set_motion(
+                                    channel, protocol.MOTION_BEFORE_ON_USE)
             if self.debug_enabled:
                 self._debug_log(
                     'U1 %s BITE result ok=%d evidence=%s', endpoint.name,
@@ -13527,6 +13735,7 @@ class BMCUManager(object):
         gcmd.respond_info('BMCU status refreshed')
 
     def cmd_STOP(self, gcmd):
+        self._u1_stop_generation += 1
         if self._u1_background_jobs:
             self._cancel_u1_background_jobs('BMCU_STOP', wait=False)
         for device in self.devices:
@@ -13660,6 +13869,11 @@ class BMCUManager(object):
         try:
             op_id = device.start_auto_calibration(selected_mask)
             record['op_id'] = op_id
+            current_record = self.active_operations.get(device.name)
+            if (current_record is not record and
+                    isinstance(current_record, dict) and
+                    current_record.get('type') == protocol.OP_BUFFER_CALIBRATION):
+                current_record['op_id'] = op_id
         except Exception:
             self.active_operations.pop(device.name, None)
             self._calibration_policy_suspended.discard(device.name)
@@ -13670,6 +13884,7 @@ class BMCUManager(object):
                     'BMCU %s could not restore runtime policy after calibration start failure',
                     device.name)
             raise
+        self._publish_active_operations()
         gcmd.respond_info('%s automatic calibration started for %s' %
                           (device.name, selected_label))
 
@@ -17923,11 +18138,17 @@ class BMCUManager(object):
         mode = str(gcmd.get('MODE')).strip().upper()
         if mode == 'STOP':
             channel = gcmd.get_int('CHANNEL', None, minval=0, maxval=3)
+            stop_key = (device.name, channel)
+            self._u1_buffer_stop_generations[stop_key] = (
+                self._u1_buffer_stop_generations.get(stop_key, 0) + 1)
             if channel is None:
                 device.stop_all()
+                self._release_u1_foreground_async_slot(device)
                 gcmd.respond_info('%s all buffer motion stopped' % device.name)
             else:
                 device.set_motion(channel, protocol.MOTION_IDLE)
+                self._release_u1_foreground_async_slot(
+                    device, channel=channel)
                 gcmd.respond_info('%s Channel %d buffer mode -> STOP' %
                                   (device.name, channel + 1))
             return

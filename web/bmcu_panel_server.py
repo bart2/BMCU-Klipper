@@ -438,6 +438,10 @@ def build_orca_bundle(root, bmcu_count, colors, host, tools=None):
         raise ValueError('invalid Orca process/filament template')
     process_profile['compatible_printers'] = [profile_name]
     filament_profile['compatible_printers'] = [profile_name]
+    process_profile['version'] = profile['version']
+    process_profile['print_settings_id'] = process_profile['name']
+    filament_profile['version'] = profile['version']
+    filament_profile['filament_settings_id'] = [filament_profile['name']]
 
     profile_path = 'printer/%s.json' % profile_name
     process_path = 'process/%s.json' % process_profile['name']
@@ -537,6 +541,10 @@ def build_snapmaker_orca_bundle(root, bmcu_count, colors, host, tools=None):
     filament_profile['instantiation'] = 'true'
     filament_profile['setting_id'] = 'BMCU_SNAPMAKER_U1_FILAMENT_PLA'
     filament_profile['compatible_printers'] = [profile_name]
+    process_profile['version'] = profile['version']
+    process_profile['print_settings_id'] = process_name
+    filament_profile['version'] = profile['version']
+    filament_profile['filament_settings_id'] = [filament_name]
 
     profile_path = 'printer/%s.json' % profile_name
     process_path = 'process/%s.json' % process_name

@@ -19,13 +19,30 @@ class AutoRefillController(object):
         self.manual_pending = None
         self.last = None
 
+    @staticmethod
+    def _snapshot_container(value):
+        if isinstance(value, dict):
+            return {key: AutoRefillController._snapshot_container(item)
+                    for key, item in value.items()}
+        if isinstance(value, list):
+            return [AutoRefillController._snapshot_container(item)
+                    for item in value]
+        if isinstance(value, tuple):
+            return tuple(AutoRefillController._snapshot_container(item)
+                         for item in value)
+        return value
+
     def status(self):
         return {
-            'active': {key: dict(value) for key, value in self.transactions.items()},
-            'print_backups': {str(key): list(value) for key, value in self.print_backups.items()},
-            'manual_pending': (dict(self.manual_pending)
+            'active': {key: self._snapshot_container(
+                           self._public_transaction(value))
+                       for key, value in self.transactions.items()},
+            'print_backups': {str(key): self._snapshot_container(value)
+                              for key, value in self.print_backups.items()},
+            'manual_pending': (self._snapshot_container(self.manual_pending)
                                if isinstance(self.manual_pending, dict) else None),
-            'last': dict(self.last) if isinstance(self.last, dict) else self.last,
+            'last': (self._snapshot_container(self.last)
+                     if isinstance(self.last, dict) else self.last),
         }
 
     def clear_print(self):
@@ -1124,9 +1141,14 @@ class AutoRefillController(object):
                 if callable(unmark):
                     unmark(source_device, source_channel)
 
-        device.set_motion(channel, protocol.MOTION_BEFORE_ON_USE)
-        self.reactor.pause(self.reactor.monotonic() + 0.2)
-        device.set_motion(channel, protocol.MOTION_ON_USE)
+        if endpoint.driver == 'snapmaker_u1':
+            self.manager._u1_foreground_motion_pair(
+                device, channel, protocol.MOTION_BEFORE_ON_USE,
+                protocol.MOTION_ON_USE, 0.2)
+        else:
+            device.set_motion(channel, protocol.MOTION_BEFORE_ON_USE)
+            self.reactor.pause(self.reactor.monotonic() + 0.2)
+            device.set_motion(channel, protocol.MOTION_ON_USE)
 
         if not finalized:
 
@@ -1568,7 +1590,8 @@ class AutoRefillController(object):
         transaction['phase'] = 'CROSS_ENDPOINT_BITE'
         u1_pressure_evidence = None
         if manager._u1_has_authoritative_entry_sensor(endpoint):
-            device.set_motion(channel, protocol.MOTION_BEFORE_ON_USE)
+            manager._set_u1_foreground_load_motion(
+                device, channel, protocol.MOTION_BEFORE_ON_USE)
         manager._endpoint_temperature_call(
             endpoint, 'ensure_bite_ready', material, temperature_profile)
         if manager._u1_has_authoritative_entry_sensor(endpoint):
@@ -1576,7 +1599,11 @@ class AutoRefillController(object):
                 device, channel, endpoint, timeout_s,
                 arrival_evidence=arrival)
         else:
-            device.set_motion(channel, protocol.MOTION_BEFORE_ON_USE)
+            if endpoint.driver == 'snapmaker_u1':
+                manager._set_u1_foreground_load_motion(
+                    device, channel, protocol.MOTION_BEFORE_ON_USE)
+            else:
+                device.set_motion(channel, protocol.MOTION_BEFORE_ON_USE)
         bite_ok = False
         bite_evidence = {}
         if manager._u1_has_authoritative_entry_sensor(endpoint):
