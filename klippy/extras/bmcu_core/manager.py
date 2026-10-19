@@ -1486,6 +1486,7 @@ class BMCUManager(object):
             'BMCU_TEST_ENCODER': self.cmd_TEST_ENCODER,
             'BMCU_CHANNEL_AUTOLOAD': self.cmd_CHANNEL_AUTOLOAD,
             'BMCU_CHANNEL_RETRACT': self.cmd_CHANNEL_RETRACT,
+            'BMCU_CHANNEL_PRELOAD': self.cmd_CHANNEL_PRELOAD,
             'BMCU_SET_FILAMENT': self.cmd_SET_FILAMENT,
             'BMCU_APPLY_PRESET': self.cmd_APPLY_PRESET,
             'BMCU_SET_ENDPOINT': self.cmd_SET_ENDPOINT,
@@ -14001,6 +14002,32 @@ class BMCUManager(object):
             self._channel_metadata(device, channel).get('autoload_mm', 120.0))
         self._run_distance_test(
             gcmd, protocol.MSG_CHANNEL_AUTOLOAD, default_mm, 'Channel autoload')
+
+    def cmd_CHANNEL_PRELOAD(self, gcmd):
+        self._require_standalone_operation('BMCU_CHANNEL_PRELOAD', gcmd)
+        device = self._require_device(gcmd)
+        channel = self._require_channel(gcmd)
+        self._lock_channel_input(
+            device, 'PRELOAD_INPUT %s:%d' % (device.name, channel), channel)
+        try:
+            if not device.ready:
+                raise BMCUError('%s is offline' % device.name)
+            if not (device.status['calibration_valid_mask'] & (1 << channel)):
+                raise BMCUError('Channel buffer is not calibrated')
+            if device.status['present'][channel]:
+                raise BMCUError('Channel already contains filament')
+            if self._route_state(device, channel) != protocol.ROUTE_EMPTY:
+                raise BMCUError('Channel route must be EMPTY for Preload')
+            if any(int(value) != protocol.MOTION_IDLE
+                   for value in device.status.get('motion', [])):
+                raise BMCUError('BMCU is busy')
+            device.start_channel_preload(channel)
+            gcmd.respond_info('%s Channel %d Preload started' %
+                              (device.name, channel + 1))
+        except Exception as exc:
+            raise gcmd.error(str(exc))
+        finally:
+            self._unlock_channel_input(device)
 
     def cmd_CHANNEL_RETRACT(self, gcmd):
         self._require_standalone_operation('BMCU_CHANNEL_RETRACT', gcmd)

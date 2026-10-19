@@ -1056,12 +1056,22 @@ function updateDashboardChannel(node, item) {
     channel.channel_retract_supported === true &&
     channel.calibration_valid === true && channel.encoder_io_ok !== false &&
     Number(channel.motion || 0) === 0;
-  retract.hidden = !parkedInBmcu && operation?.kind !== 'retracting';
-  retract.dataset.action = 'retract-channel';
+  const emptyForPreload = !Boolean(channel.present) &&
+    routeState(channel) === 'EMPTY' && !channel.loaded && !channel.uncertain &&
+    !tail && !channel.tail_unrouted && !prestaged;
+  const canPreload = emptyForPreload && deviceReady(device) &&
+    !plainObject(deviceOperation) && deviceMotionIdle &&
+    channel.calibration_valid === true && channel.connected !== false &&
+    channel.encoder_io_ok !== false;
+  retract.hidden = !parkedInBmcu && !emptyForPreload && operation?.kind !== 'retracting';
+  retract.dataset.action = emptyForPreload ? 'preload-channel' : 'retract-channel';
   retract.dataset.device = device.name;
   retract.dataset.channel = String(channel.channel);
-  retract.disabled = Boolean(operation) || !canRetractInput;
-  retract.title = operation?.kind === 'retracting'
+  retract.disabled = Boolean(operation) || (emptyForPreload ? !canPreload : !canRetractInput);
+  retract.title = emptyForPreload
+    ? (canPreload ? 'Start the BMCU input Preload sequence before inserting filament.'
+       : 'Preload is unavailable while the BMCU is busy or uncalibrated.')
+    : operation?.kind === 'retracting'
     ? 'Input filament is being withdrawn from this BMCU channel.'
     : !deviceReady(device)
       ? 'BMCU is not ready yet.'
@@ -1074,7 +1084,8 @@ function updateDashboardChannel(node, item) {
             : plainObject(deviceOperation) || !deviceMotionIdle || Number(channel.motion || 0) !== 0
               ? 'BMCU is busy. Retract will be available as soon as motion stops.'
               : 'Withdraw the filament completely from this BMCU input while the toolhead route is empty.';
-  text(retract, operation?.kind === 'retracting' ? 'Retracting…' : 'Retract filament');
+  text(retract, emptyForPreload ? 'Preload' :
+    (operation?.kind === 'retracting' ? 'Retracting…' : 'Retract filament'));
 
   const button = node.querySelector('.load-toggle');
   const unload = Boolean(channel.loaded || tail);
@@ -4412,6 +4423,19 @@ async function handleAction(target) {
     setChannelOperation(device, channel, 'loading');
     try {
       await run(`BMCU_LOAD DEVICE=${gcodeValue(device)} CHANNEL=${channel}`, {success: `Channel ${channel + 1} loaded`});
+      clearChannelOperation(device, channel);
+      await transport.refreshNow();
+    } catch (error) {
+      clearChannelOperation(device, channel);
+      transport.refreshSoon(0);
+      throw error;
+    }
+  }
+  else if (action === 'preload-channel') {
+    setChannelOperation(device, channel, 'preloading');
+    try {
+      await run(`BMCU_CHANNEL_PRELOAD DEVICE=${gcodeValue(device)} CHANNEL=${channel}`,
+        {success: `Channel ${channel + 1} Preload started`});
       clearChannelOperation(device, channel);
       await transport.refreshNow();
     } catch (error) {

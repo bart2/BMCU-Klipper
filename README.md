@@ -4,6 +4,30 @@
 > **Before updating BMCU-Klipper, completely unload all filament from every BMCU and toolhead.**
 > A BMCU-Klipper update may also require a matching BMCU firmware update. If the required firmware version changes, update the BMCU firmware before using BMCU again.
 
+## Acknowledgements
+
+A huge thank you to the following companies for supporting this project!
+
+**Hardware supporters:** [FYSETC](https://www.fysetc.com/) · [Star Labs](https://starlabs.systems/) · [KUBII](https://www.kubii.com/) · [Pimoroni](https://shop.pimoroni.com/) · [Alveo3D](https://www.alveo3d.com/) · [BIQU](https://biqu3d.com/) · [UGEE](https://www.ugee.com/) · [SUNLU](https://www.sunlu.com/) · [Cartographer](https://cartographer3d.com/)
+
+**Filament supporters:** [ROSA3D](https://www.rosa3d.pl/) · [Nebula Filaments](https://b2b.nebulafilaments.com/en/) · [Filament PM](https://www.filament-pm.com/) · [AzureFilm](https://azurefilm.com/)
+
+
+<table border="0" cellpadding="0" cellspacing="0" style="border: none; border-collapse: collapse;">
+  <tr style="border: none;">
+    <td width="150" valign="top" style="border: none; padding: 0 16px 0 0;">
+      <a href="docs/assets/snapmaker-phase1-winners.png">
+        <img src="docs/assets/snapmaker-phase1-winners.png" alt="Snapmaker Innovation Fund Phase 1 winners" width="140">
+      </a>
+    </td>
+    <td valign="top" style="border: none; padding: 0;">
+      <h3>Snapmaker Innovation Fund - Phase 1, Tier 02 Winner</h3>
+      <p>BMCU-Klipper was selected as a <strong>Tier 02 winner</strong> in the Snapmaker Innovation Fund, Phase 1.</p>
+    </td>
+  </tr>
+</table>
+
+
 BMCU is an open **Multi Color Unit**, originally designed for Bambu Lab printers. Firmware updates for Bambu Lab printers that restrict interoperability - which in my opinion are incompatible with European law ([more on this topic](https://github.com/jarczakpawel/BMCU-C-PJARCZAK/blob/main/bmcu-vs-firmware-locks.md)) - are what led to the creation of BMCU-Klipper.
 
 BMCU-Klipper integrates BMCU with Klipper and provides routing, load/unload, refill, prestaging, tip forming and source planning.

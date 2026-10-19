@@ -55,6 +55,7 @@ Commands that change a physical route require an unambiguous state and a free ro
 | `BMCU_TEST_ENCODER` | common | motion and encoder measurement test |
 | `BMCU_CHANNEL_AUTOLOAD` | service | controlled channel input feed |
 | `BMCU_CHANNEL_RETRACT` | common | fully retract filament parked in BMCU |
+| `BMCU_CHANNEL_PRELOAD` | common | start DM input Preload on an empty channel |
 | `BMCU_SET_FILAMENT` | common | channel material, color, refill and metadata |
 | `BMCU_SET_TOOL` | common | persistent logical `T` assignment |
 | `BMCU_MAP_TOOL` | print plan | alias for source mapping in an open transaction |

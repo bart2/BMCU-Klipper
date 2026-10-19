@@ -5,7 +5,7 @@
 #define BMCU_PROTO_VER 1u
 #define BMCU_FW_MAJOR 1u
 #define BMCU_FW_MINOR 0u
-#define BMCU_FW_PATCH 2u
+#define BMCU_FW_PATCH 3u
 
 #define MSG_HELLO               0x01u
 #define MSG_PING                0x02u
@@ -34,6 +34,7 @@
 #define MSG_GET_SLOT_INFO       0x21u
 #define MSG_SET_SLOTS           0x22u
 #define MSG_CHANNEL_RETRACT      0x23u
+#define MSG_CHANNEL_PRELOAD      0x24u
 #define MSG_CONFIG_GET          0x30u
 #define MSG_CONFIG_SET          0x31u
 #define MSG_CONFIG_SAVE         0x32u

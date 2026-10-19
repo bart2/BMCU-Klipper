@@ -266,10 +266,12 @@ static uint8_t  dm_idle_empty[4]         = {0,0,0,0};
 static uint64_t dm_loaded_drop_t0_ms[4] = {0ull,0ull,0ull,0ull};
 #endif
 
+static uint64_t dm_preload_until_ms[4] = {0ull,0ull,0ull,0ull};
+
 static constexpr float    AUTO_UNLOAD_START_PCT      = 80.0f;
 static constexpr float    AUTO_UNLOAD_NEUTRAL_LO_PCT = 45.0f;
 static constexpr float    AUTO_UNLOAD_NEUTRAL_HI_PCT = 55.0f;
-static constexpr float    AUTO_UNLOAD_ABORT_PCT      = 35.0f;
+static constexpr float    AUTO_UNLOAD_ABORT_PCT      = 5.0f;
 static constexpr uint64_t AUTO_UNLOAD_ARM_MS         = 1000ull;
 static constexpr uint64_t AUTO_UNLOAD_MAX_MS         = 300000ull;
 static constexpr uint64_t AUTO_UNLOAD_EMPTY_MS       = 1500ull;
@@ -288,7 +290,7 @@ static uint64_t auto_unload_rearm_t0_ms[4]  = {0ull,0ull,0ull,0ull};
 static float    auto_unload_start_m[4]       = {0.0f,0.0f,0.0f,0.0f};
 
 static constexpr uint64_t HOST_MOTION_SETTLE_MS = 2000ull;
-static constexpr float HOST_MOTION_NEUTRAL_LO_PCT = 35.0f;
+static constexpr float HOST_MOTION_NEUTRAL_LO_PCT = 5.0f;
 static constexpr float HOST_MOTION_NEUTRAL_HI_PCT = 65.0f;
 static constexpr float HOST_MOTION_STABLE_DELTA_PCT = 1.5f;
 
@@ -1292,7 +1294,9 @@ public:
                     else if (filament_channel_inserted[CHx] &&
                              (dm_loaded[CHx] == 0u))
                     {
-                        const uint8_t ks = MC_ONLINE_key_stu[CHx];
+                        const uint8_t physical_ks = MC_ONLINE_key_stu[CHx];
+                        const uint8_t ks = (physical_ks == 0u &&
+                            now_ms < dm_preload_until_ms[CHx]) ? 2u : physical_ks;
                         const float cur_m = encoder_meters(CHx);
 
                         if (dm_fail_latch[CHx] &&
@@ -2232,6 +2236,36 @@ void Motion_control_cancel_all_channel_retracts(void)
         Motion_control_cancel_channel_retract(channel);
 }
 
+void Motion_control_cancel_preloads(void)
+{
+#if BMCU_DM_TWO_MICROSWITCH
+    for (uint8_t channel = 0u; channel < kChCount; channel++)
+        dm_preload_until_ms[channel] = 0ull;
+#endif
+}
+
+bool Motion_control_start_preload(uint8_t channel)
+{
+#if BMCU_DM_TWO_MICROSWITCH
+    if (channel >= kChCount || !g_host_motion_enabled ||
+        !bmcu_policy_autonomous_assist() ||
+        !filament_channel_inserted[channel] ||
+        MC_ONLINE_key_stu[channel] != 0u ||
+        !MC_PULL_calibration_is_valid(channel) ||
+        !AS5600_is_good(channel) ||
+        dm_fail_latch[channel] ||
+        auto_unload_active[channel] ||
+        ams_state_get_route_state(channel) != AMS_ROUTE_EMPTY)
+        return false;
+    dm_autoload_gate[channel] = 0u;
+    dm_preload_until_ms[channel] = time_ms_fast() + 4500ull;
+    return true;
+#else
+    (void)channel;
+    return false;
+#endif
+}
+
 void Motion_control_clear_faults(void)
 {
     Motion_control_cancel_all_channel_retracts();
@@ -2843,7 +2877,8 @@ static void motor_motion_switch(uint64_t time_now, uint8_t handled_mask)
                 }
 
                 if (filament_channel_inserted[i] &&
-                    (MC_ONLINE_key_stu[i] != 0 || g_last_on_use_exit_ms[i] != 0))
+                    (MC_ONLINE_key_stu[i] != 0 || g_last_on_use_exit_ms[i] != 0
+                     || time_now < dm_preload_until_ms[i]))
                     MOTOR_CONTROL[i].set_motion(filament_motion_enum::filament_motion_pressure_ctrl_idle, 1000, time_now);
                 else
                     MOTOR_CONTROL[i].set_motion(filament_motion_enum::filament_motion_stop, 1000, time_now);
@@ -2869,7 +2904,9 @@ static void motor_motion_switch(uint64_t time_now, uint8_t handled_mask)
             filament_now_position[i] = filament_idle;
             if (motion == _filament_motion::idle)
             {
-                if (filament_channel_inserted[i] && g_last_on_use_exit_ms[i] != 0u)
+                if (filament_channel_inserted[i] &&
+                    (g_last_on_use_exit_ms[i] != 0u ||
+                     time_now < dm_preload_until_ms[i]))
                     MOTOR_CONTROL[i].set_motion(filament_motion_enum::filament_motion_pressure_ctrl_idle, 1000, time_now);
                 else
                     MOTOR_CONTROL[i].set_motion(filament_motion_enum::filament_motion_stop, 1000, time_now);
@@ -2944,6 +2981,7 @@ static void motor_motion_run(int error, uint64_t time_now, uint32_t now_ticks,
     {
         if (error || calibration_inhibit || !g_host_motion_enabled)
         {
+            dm_preload_until_ms[ch] = 0ull;
             dm_loaded[ch]            = 0u;
             dm_fail_latch[ch]        = 0u;
             dm_auto_state[ch]        = DM_AUTO_IDLE;
@@ -2960,6 +2998,7 @@ static void motor_motion_run(int error, uint64_t time_now, uint32_t now_ticks,
 
         if (!filament_channel_inserted[ch])
         {
+            dm_preload_until_ms[ch] = 0ull;
             dm_loaded[ch]            = 1u;
             dm_fail_latch[ch]        = 0u;
             dm_auto_state[ch]        = DM_AUTO_IDLE;
@@ -2973,7 +3012,10 @@ static void motor_motion_run(int error, uint64_t time_now, uint32_t now_ticks,
             continue;
         }
 
-        const uint8_t ks = MC_ONLINE_key_stu[ch];
+        const uint8_t physical_ks = MC_ONLINE_key_stu[ch];
+        if (physical_ks != 0u) dm_preload_until_ms[ch] = 0ull;
+        const uint8_t ks = (physical_ks == 0u &&
+            time_now < dm_preload_until_ms[ch]) ? 2u : physical_ks;
         const bool idle =
             filament_now_position[ch] == filament_idle &&
             ams[motion_control_ams_num].filament[ch].motion == _filament_motion::idle &&

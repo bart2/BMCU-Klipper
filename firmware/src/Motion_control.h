@@ -16,6 +16,8 @@ uint8_t Motion_control_encoder_io_ok(uint8_t CHx);
 float Motion_control_encoder_meters(uint8_t CHx);
 void Motion_control_run(int error);
 void Motion_control_clear_faults(void);
+bool Motion_control_start_preload(uint8_t channel);
+void Motion_control_cancel_preloads(void);
 bool Motion_control_start_channel_retract(uint8_t channel);
 bool Motion_control_channel_retract_active(uint8_t channel);
 void Motion_control_cancel_channel_retract(uint8_t channel);

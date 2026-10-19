@@ -448,6 +448,7 @@ static bool set_motion(uint8_t ch, _filament_motion motion, bool persist_route_c
 static void stop_all_motion(void)
 {
     Motion_control_cancel_all_channel_retracts();
+    Motion_control_cancel_preloads();
     for (uint8_t i = 0; i < 4; i++)
     {
         ams[0].filament[i].motion = _filament_motion::idle;
@@ -923,7 +924,7 @@ static void process_distance_op(void)
         }
         finish_distance_op(
             OP_STATE_FAILED,
-            MC_PULL_pct[g_op.ch] < 35u ? OP_REASON_BUFFER_LIMIT :
+            MC_PULL_pct[g_op.ch] < 5u ? OP_REASON_BUFFER_LIMIT :
                                         OP_REASON_SENSOR);
         return;
     }
@@ -1035,6 +1036,7 @@ static int16_t command_payload_size(uint8_t type)
     case MSG_CAL_COMMIT:
     case MSG_GET_SLOT_INFO:
     case MSG_CHANNEL_RETRACT:
+    case MSG_CHANNEL_PRELOAD:
         return 1;
     case MSG_SET_MOTION:
     case MSG_CAL_CAPTURE:
@@ -1230,8 +1232,18 @@ static void handle_packet(const uint8_t *data, uint16_t len)
             else send_error(header.cmd_id, payload[0], 4);
         }
         break;
+    case MSG_CHANNEL_PRELOAD:
+        if (payload[0] >= 4u || any_operation_active() || any_motion_active() ||
+            !Motion_control_start_preload(payload[0]))
+        {
+            send_error(header.cmd_id, payload[0], 40u);
+            break;
+        }
+        send_ack(header.cmd_id, 1u, 0u);
+        send_status(0u);
+        break;
     case MSG_MARK_UNLOADED:
-        if (payload[0] >= 4u || operation_blocks_channel(payload[0]))
+
         {
             send_error(header.cmd_id, 0xFF, 5);
             break;

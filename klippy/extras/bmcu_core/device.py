@@ -1589,6 +1589,10 @@ class BMCUDevice(object):
                               protocol.MOTION_STOP_ON_USE)
         return self.request(protocol.MSG_SET_MOTION, bytes([channel, motion]), timeout=1.0)
 
+    def start_channel_preload(self, channel):
+        channel = _bounded_int(channel, 'channel', 0, 3)
+        return self.request(protocol.MSG_CHANNEL_PRELOAD, bytes([channel]), timeout=1.0)
+
     def mark_unloaded(self, channel):
 
         channel = _bounded_int(channel, 'channel', 0, 3)
