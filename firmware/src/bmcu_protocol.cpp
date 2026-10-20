@@ -1243,7 +1243,7 @@ static void handle_packet(const uint8_t *data, uint16_t len)
         send_status(0u);
         break;
     case MSG_MARK_UNLOADED:
-
+        if (payload[0] >= 4u || operation_blocks_channel(payload[0]))
         {
             send_error(header.cmd_id, 0xFF, 5);
             break;
@@ -1253,7 +1253,7 @@ static void handle_packet(const uint8_t *data, uint16_t len)
 
             ams[0].filament[ch].motion = _filament_motion::idle;
             Motion_control_stop_channel_motion(ch);
-            if (!ams_state_set_unloaded(ch) || !ams_state_save_run())
+            if (!ams_state_set_unloaded(ch))
             {
                 send_error(header.cmd_id, ch, 71);
                 send_status(0);

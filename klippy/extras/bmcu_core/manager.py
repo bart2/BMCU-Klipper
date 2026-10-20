@@ -13345,6 +13345,9 @@ class BMCUManager(object):
             raise BMCUError(
                 'PARK_FAILED: BMCU did not commit Channel %d as EMPTY' %
                 (channel + 1))
+        logging.info(
+            'BMCU %s Channel %d automatically confirmed EMPTY after unload',
+            device.name, channel + 1)
         self._commit_u1_route_ownership(device, channel, protocol.ROUTE_EMPTY)
         if not self._routes_for_endpoint(
                 endpoint.name,
@@ -14078,6 +14081,9 @@ class BMCUManager(object):
                 raise BMCUError(
                     'Channel retract completed but route ownership changed; '
                     'routing remains blocked for inspection')
+            logging.info(
+                'BMCU %s Channel %d input retract completed; route remains EMPTY',
+                device.name, channel + 1)
             if self._clear_matching_last_error(
                     device, channel, self._endpoint_for_channel(device, channel)):
                 self._save_runtime()

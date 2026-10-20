@@ -163,6 +163,8 @@ bool ams_state_set_loaded(uint8_t filament_ch)
 bool ams_state_set_unloaded(uint8_t filament_ch)
 {
     if (filament_ch >= 4u) return false;
+    if (g_route_state[filament_ch] == AMS_ROUTE_EMPTY && !g_state_dirty)
+        return true;
     const uint8_t previous = g_route_state[filament_ch];
     const uint8_t previous_dirty = g_state_dirty;
     g_route_state[filament_ch] = AMS_ROUTE_EMPTY;
