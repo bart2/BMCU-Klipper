@@ -42,6 +42,17 @@ static uint32_t tx_dropped = 0u;
 static uint32_t tx_errors = 0u;
 static uint32_t tx_started_tick = 0u;
 
+static inline void set_rs485_idle(void)
+{
+#ifdef BMCU_TTL_DISABLE_RS485_RX
+    // Diagnostic TTL-only build: disable the RS485 receiver sharing PA10.
+    // PA12 also enables the RS485 transmitter. A/B must be disconnected.
+    GPIOA->BSHR = GPIO_Pin_12;
+#else
+    GPIOA->BCR = GPIO_Pin_12;
+#endif
+}
+
 static uint32_t rx_produced(void)
 {
     const uint32_t irq = irq_save_wch();
@@ -141,7 +152,7 @@ static void tx_start_next(void)
     DMA1_Channel4->MADDR = (uint32_t)(uintptr_t)slot->data;
     DMA1_Channel4->CNTR = slot->len;
     USART_ClearFlag(USART1, USART_FLAG_TC);
-    GPIOA->BCR = GPIO_Pin_12;
+    set_rs485_idle();
     tx_busy = 1u;
     tx_started_tick = time_ticks32();
     DMA_Cmd(DMA1_Channel4, ENABLE);
@@ -170,7 +181,7 @@ void bmcu_uart_init(uint32_t baud)
     gpio.GPIO_Speed = GPIO_Speed_50MHz;
     gpio.GPIO_Mode = GPIO_Mode_Out_PP;
     GPIO_Init(GPIOA, &gpio);
-    GPIOA->BCR = GPIO_Pin_12;
+    set_rs485_idle();
 
     USART_DeInit(USART1);
     us.USART_BaudRate = baud;
@@ -335,7 +346,7 @@ void bmcu_uart_poll(void)
         tx_wait_tc = 0u;
         tx_errors++;
         tx_pop_active();
-        GPIOA->BCR = GPIO_Pin_12;
+        set_rs485_idle();
     }
     else if (tx_busy && (flags & DMA1_FLAG_TC4))
     {
@@ -349,7 +360,7 @@ void bmcu_uart_poll(void)
     {
         tx_wait_tc = 0u;
         tx_pop_active();
-        GPIOA->BCR = GPIO_Pin_12;
+        set_rs485_idle();
     }
 
     uint32_t ticks_per_ms = time_hw_tpms;
@@ -363,7 +374,7 @@ void bmcu_uart_poll(void)
         tx_wait_tc = 0u;
         tx_errors++;
         tx_pop_active();
-        GPIOA->BCR = GPIO_Pin_12;
+        set_rs485_idle();
     }
 
     tx_start_next();
